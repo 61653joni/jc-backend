@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
+const multer = require('multer');
+const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
 const app = express();
@@ -18,6 +20,60 @@ const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_ANON_KEY
 );
+
+// ============ CONFIGURACIÓN DE MULTER PARA IMÁGENES ============
+const storage = multer.memoryStorage();
+const upload = multer({ 
+    storage,
+    limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Formato no permitido. Usa JPG, PNG o WEBP'));
+        }
+    }
+});
+
+// ============ RUTA PARA SUBIR IMÁGENES ============
+app.post('/api/upload', upload.single('imagen'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No se subió ninguna imagen' });
+        }
+        
+        console.log('📸 Recibida imagen:', req.file.originalname);
+        
+        // Crear nombre único
+        const extension = req.file.originalname.split('.').pop();
+        const nombreUnico = `${Date.now()}-${uuidv4().substring(0, 8)}.${extension}`;
+        
+        // Subir a Supabase Storage
+        const { data, error } = await supabase.storage
+            .from('Libros')
+            .upload(nombreUnico, req.file.buffer, {
+                contentType: req.file.mimetype
+            });
+        
+        if (error) {
+            console.error('Error al subir a Supabase:', error);
+            return res.status(500).json({ error: error.message });
+        }
+        
+        // Obtener URL pública
+        const { data: urlData } = supabase.storage
+            .from('Libros')
+            .getPublicUrl(nombreUnico);
+        
+        console.log('✅ Imagen subida:', urlData.publicUrl);
+        res.json({ url: urlData.publicUrl });
+        
+    } catch (error) {
+        console.error('Error en /api/upload:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
 
 // ============ RUTAS DE AUTENTICACIÓN ============
 
@@ -109,23 +165,6 @@ app.get('/api/auth/me', async (req, res) => {
 
 // ============ RUTAS DE LIBROS ============
 
-// Obtener todos los libros
-app.get('/api/libros', async (req, res) => {
-    try {
-        const { data, error } = await supabase
-            .from('libros')
-            .select('*')
-            .order('titulo');
-        
-        if (error) throw error;
-        res.json(data);
-        
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Obtener un libro por ID
 // Obtener todos los libros con su categoría
 app.get('/api/libros', async (req, res) => {
     try {
@@ -154,6 +193,7 @@ app.get('/api/libros', async (req, res) => {
     }
 });
 
+// Obtener categorías
 app.get('/api/categorias', async (req, res) => {
     try {
         const { data, error } = await supabase
@@ -168,6 +208,7 @@ app.get('/api/categorias', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
 // Crear un nuevo libro
 app.post('/api/libros', async (req, res) => {
     const { titulo, autor, isbn, categoria_id, cantidad_total, cantidad_disponible, imagen_url } = req.body;
@@ -197,10 +238,11 @@ app.post('/api/libros', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
 // Actualizar un libro
 app.put('/api/libros/:id', async (req, res) => {
     const { id } = req.params;
-    const { titulo, autor, isbn, categoria, cantidad_total, cantidad_disponible, imagen_url } = req.body;
+    const { titulo, autor, isbn, categoria_id, cantidad_total, cantidad_disponible, imagen_url } = req.body;
     
     try {
         const { data, error } = await supabase
@@ -208,8 +250,8 @@ app.put('/api/libros/:id', async (req, res) => {
             .update({
                 titulo,
                 autor,
-                isbn,
-                categoria,
+                isbn: isbn || null,
+                categoria_id: categoria_id || null,
                 cantidad_total,
                 cantidad_disponible,
                 imagen_url

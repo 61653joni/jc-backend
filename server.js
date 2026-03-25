@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors({
-    origin: ['https://tu-frontend.vercel.app', 'http://localhost:4200'],
+    origin: ['https://jc-sooty.vercel.app/', 'http://localhost:4200'],
     credentials: true
 }));
 app.use(express.json());

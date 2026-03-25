@@ -455,7 +455,282 @@ app.delete('/api/libros/:id', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+// ============ RUTAS DE PRÉSTAMOS ============
 
+// ============ RUTAS DE PRÉSTAMOS ============
+
+// Obtener todos los préstamos con datos relacionados
+app.get('/api/prestamos', async (req, res) => {
+    try {
+        // Primero, obtener los préstamos
+        const { data: prestamos, error: prestamosError } = await supabase
+            .from('prestamos')
+            .select('*')
+            .order('created_at', { ascending: false });
+        
+        if (prestamosError) {
+            console.error('Error al obtener préstamos:', prestamosError);
+            return res.status(500).json({ error: prestamosError.message });
+        }
+        
+        // Si no hay préstamos, devolver array vacío
+        if (!prestamos || prestamos.length === 0) {
+            return res.json([]);
+        }
+        
+        // Obtener IDs únicos de libros y usuarios
+        const librosIds = [...new Set(prestamos.map(p => p.id_libro))];
+        const usuariosIds = [...new Set(prestamos.map(p => p.id_usuario))];
+        
+        // Obtener datos de libros
+        const { data: libros, error: librosError } = await supabase
+            .from('libros')
+            .select('id, titulo, autor')
+            .in('id', librosIds);
+        
+        if (librosError) {
+            console.error('Error al obtener libros:', librosError);
+        }
+        
+        // Obtener datos de usuarios
+        const { data: usuarios, error: usuariosError } = await supabase
+            .from('usuarios')
+            .select('id, nombre, email')
+            .in('id', usuariosIds);
+        
+        if (usuariosError) {
+            console.error('Error al obtener usuarios:', usuariosError);
+        }
+        
+        // Crear maps para búsqueda rápida
+        const librosMap = new Map();
+        libros?.forEach(libro => {
+            librosMap.set(libro.id, libro);
+        });
+        
+        const usuariosMap = new Map();
+        usuarios?.forEach(usuario => {
+            usuariosMap.set(usuario.id, usuario);
+        });
+        
+        // Combinar los datos
+        const prestamosConDetalles = prestamos.map(prestamo => ({
+            ...prestamo,
+            titulo: librosMap.get(prestamo.id_libro)?.titulo || 'Libro no encontrado',
+            autor: librosMap.get(prestamo.id_libro)?.autor || '',
+            nombre: usuariosMap.get(prestamo.id_usuario)?.nombre || 'Usuario no encontrado',
+            email: usuariosMap.get(prestamo.id_usuario)?.email || ''
+        }));
+        
+        console.log(`📊 Enviando ${prestamosConDetalles.length} préstamos`);
+        res.json(prestamosConDetalles);
+        
+    } catch (error) {
+        console.error('Error en GET /api/prestamos:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Crear nuevo préstamo
+app.post('/api/prestamos', async (req, res) => {
+    const { id_libro, id_usuario, fecha_inicio, fecha_fin } = req.body;
+    
+    console.log('📝 Recibida solicitud de préstamo:', { id_libro, id_usuario, fecha_inicio, fecha_fin });
+    
+    if (!id_libro || !id_usuario) {
+        return res.status(400).json({ error: 'Libro y usuario son obligatorios' });
+    }
+    
+    if (!fecha_fin) {
+        return res.status(400).json({ error: 'Fecha de devolución es obligatoria' });
+    }
+    
+    try {
+        // Verificar disponibilidad del libro
+        const { data: libro, error: libroError } = await supabase
+            .from('libros')
+            .select('cantidad_disponible, cantidad_total, titulo')
+            .eq('id', id_libro)
+            .single();
+        
+        if (libroError || !libro) {
+            console.error('Libro no encontrado:', libroError);
+            return res.status(404).json({ error: 'Libro no encontrado' });
+        }
+        
+        console.log(`📚 Libro: ${libro.titulo}, Disponibles: ${libro.cantidad_disponible}`);
+        
+        if (libro.cantidad_disponible <= 0) {
+            return res.status(400).json({ error: 'No hay ejemplares disponibles de este libro' });
+        }
+        
+        // Verificar que el usuario existe
+        const { data: usuario, error: usuarioError } = await supabase
+            .from('usuarios')
+            .select('id, nombre')
+            .eq('id', id_usuario)
+            .single();
+        
+        if (usuarioError || !usuario) {
+            console.error('Usuario no encontrado:', usuarioError);
+            return res.status(404).json({ error: 'Usuario no encontrado' });
+        }
+        
+        // Crear préstamo
+        const { data: prestamo, error: prestamoError } = await supabase
+            .from('prestamos')
+            .insert([{
+                id_libro,
+                id_usuario,
+                fecha_inicio: fecha_inicio || new Date().toISOString().split('T')[0],
+                fecha_fin,
+                estado: 'activo'
+            }])
+            .select();
+        
+        if (prestamoError) {
+            console.error('Error al crear préstamo:', prestamoError);
+            return res.status(500).json({ error: prestamoError.message });
+        }
+        
+        // Actualizar cantidad disponible del libro
+        const nuevaCantidad = libro.cantidad_disponible - 1;
+        const { error: updateError } = await supabase
+            .from('libros')
+            .update({ cantidad_disponible: nuevaCantidad })
+            .eq('id', id_libro);
+        
+        if (updateError) {
+            console.error('Error al actualizar cantidad:', updateError);
+            // No fallamos la operación, pero registramos el error
+        }
+        
+        console.log(`✅ Préstamo creado para ${usuario.nombre} - Libro: ${libro.titulo}`);
+        res.status(201).json({ 
+            success: true, 
+            prestamo: prestamo[0],
+            message: 'Préstamo creado exitosamente'
+        });
+        
+    } catch (error) {
+        console.error('Error en POST /api/prestamos:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Registrar devolución
+app.put('/api/prestamos/:id/devolver', async (req, res) => {
+    const { id } = req.params;
+    
+    try {
+        // Obtener préstamo
+        const { data: prestamo, error: prestamoError } = await supabase
+            .from('prestamos')
+            .select('*')
+            .eq('id', id)
+            .single();
+        
+        if (prestamoError || !prestamo) {
+            return res.status(404).json({ error: 'Préstamo no encontrado' });
+        }
+        
+        if (prestamo.estado !== 'activo') {
+            return res.status(400).json({ error: 'Este préstamo ya fue devuelto o cancelado' });
+        }
+        
+        // Actualizar préstamo
+        const { error: updateError } = await supabase
+            .from('prestamos')
+            .update({
+                estado: 'devuelto',
+                fecha_devolucion: new Date().toISOString().split('T')[0]
+            })
+            .eq('id', id);
+        
+        if (updateError) throw updateError;
+        
+        // Aumentar cantidad disponible del libro
+        const { data: libro, error: libroError } = await supabase
+            .from('libros')
+            .select('cantidad_disponible')
+            .eq('id', prestamo.id_libro)
+            .single();
+        
+        if (!libroError && libro) {
+            await supabase
+                .from('libros')
+                .update({ cantidad_disponible: libro.cantidad_disponible + 1 })
+                .eq('id', prestamo.id_libro);
+        }
+        
+        res.json({ message: 'Devolución registrada exitosamente' });
+        
+    } catch (error) {
+        console.error('Error en devolución:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Cancelar préstamo
+app.put('/api/prestamos/:id/cancelar', async (req, res) => {
+    const { id } = req.params;
+    
+    try {
+        const { data: prestamo, error: prestamoError } = await supabase
+            .from('prestamos')
+            .select('*')
+            .eq('id', id)
+            .single();
+        
+        if (prestamoError || !prestamo) {
+            return res.status(404).json({ error: 'Préstamo no encontrado' });
+        }
+        
+        if (prestamo.estado !== 'activo') {
+            return res.status(400).json({ error: 'Este préstamo no está activo' });
+        }
+        
+        await supabase
+            .from('prestamos')
+            .update({ estado: 'cancelado' })
+            .eq('id', id);
+        
+        // Devolver el libro al inventario
+        const { data: libro, error: libroError } = await supabase
+            .from('libros')
+            .select('cantidad_disponible')
+            .eq('id', prestamo.id_libro)
+            .single();
+        
+        if (!libroError && libro) {
+            await supabase
+                .from('libros')
+                .update({ cantidad_disponible: libro.cantidad_disponible + 1 })
+                .eq('id', prestamo.id_libro);
+        }
+        
+        res.json({ message: 'Préstamo cancelado' });
+        
+    } catch (error) {
+        console.error('Error al cancelar:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Obtener todos los usuarios (para el select)
+app.get('/api/usuarios', async (req, res) => {
+    try {
+        const { data, error } = await supabase
+            .from('usuarios')
+            .select('id, nombre, email, tipo_usu')
+            .order('nombre');
+        
+        if (error) throw error;
+        res.json(data);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 // ============ INICIAR SERVIDOR ============
 app.listen(PORT, () => {
     console.log(`✅ Backend corriendo en http://localhost:${PORT}`);

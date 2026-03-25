@@ -1,8 +1,10 @@
 const express = require('express');
 const cors = require('cors');
-const { createClient } = require('@supabase/supabase-js');
+const { createClient } = require('@supabase/supabase-js'); // ✅ Solo UNA vez
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
+const nodemailer = require('nodemailer'); // ✅ Agregado
+const crypto = require('crypto'); // ✅ Agregado
 require('dotenv').config();
 
 const app = express();
@@ -21,11 +23,20 @@ const supabase = createClient(
     process.env.SUPABASE_ANON_KEY
 );
 
+// Configurar nodemailer para enviar correos
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+    }
+});
+
 // ============ CONFIGURACIÓN DE MULTER PARA IMÁGENES ============
 const storage = multer.memoryStorage();
 const upload = multer({ 
     storage,
-    limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
+    limits: { fileSize: 2 * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
         const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
         if (allowedTypes.includes(file.mimetype)) {
@@ -45,11 +56,9 @@ app.post('/api/upload', upload.single('imagen'), async (req, res) => {
         
         console.log('📸 Recibida imagen:', req.file.originalname);
         
-        // Crear nombre único
         const extension = req.file.originalname.split('.').pop();
         const nombreUnico = `${Date.now()}-${uuidv4().substring(0, 8)}.${extension}`;
         
-        // Subir a Supabase Storage
         const { data, error } = await supabase.storage
             .from('Libros')
             .upload(nombreUnico, req.file.buffer, {
@@ -61,7 +70,6 @@ app.post('/api/upload', upload.single('imagen'), async (req, res) => {
             return res.status(500).json({ error: error.message });
         }
         
-        // Obtener URL pública
         const { data: urlData } = supabase.storage
             .from('Libros')
             .getPublicUrl(nombreUnico);
@@ -75,9 +83,52 @@ app.post('/api/upload', upload.single('imagen'), async (req, res) => {
     }
 });
 
+// ============ FUNCIÓN PARA ENVIAR CORREO DE VERIFICACIÓN ============
+async function sendVerificationEmail(email, nombre, token) {
+    const verificationUrl = `https://jc-sooty.vercel.app/verify-email?token=${token}`;
+    // Para desarrollo local descomentar la siguiente línea y comentar la de arriba:
+    // const verificationUrl = `http://localhost:4200/verify-email?token=${token}`;
+    
+    const mailOptions = {
+        from: '"Biblioteca JC" <no-reply@jcbiblioteca.com>',
+        to: email,
+        subject: 'Confirma tu correo electrónico - Biblioteca JC',
+        html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #007bff;">¡Bienvenido a Biblioteca JC!</h2>
+                <p>Hola <strong>${nombre || 'usuario'}</strong>,</p>
+                <p>Gracias por registrarte. Por favor confirma tu correo electrónico haciendo clic en el siguiente enlace:</p>
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="${verificationUrl}" 
+                       style="background-color: #007bff; color: white; padding: 12px 24px; 
+                              text-decoration: none; border-radius: 5px; display: inline-block;">
+                        Confirmar mi cuenta
+                    </a>
+                </div>
+                <p>O copia y pega este enlace en tu navegador:</p>
+                <p style="background-color: #f4f4f4; padding: 10px; border-radius: 5px; word-break: break-all;">
+                    ${verificationUrl}
+                </p>
+                <p>Este enlace expirará en <strong>24 horas</strong>.</p>
+                <p>Si no creaste esta cuenta, puedes ignorar este correo.</p>
+                <hr style="margin: 30px 0;">
+                <p style="color: #666; font-size: 12px;">© 2024 Biblioteca JC. Todos los derechos reservados.</p>
+            </div>
+        `
+    };
+    
+    try {
+        await transporter.sendMail(mailOptions);
+        console.log(`✅ Correo de verificación enviado a ${email}`);
+    } catch (error) {
+        console.error('❌ Error al enviar correo:', error);
+        throw error;
+    }
+}
+
 // ============ RUTAS DE AUTENTICACIÓN ============
 
-// ✅ Ruta de REGISTRO
+// ✅ Ruta de REGISTRO con verificación
 app.post('/api/auth/registro', async (req, res) => {
     const { nombre, apellido, curp, telefono, email, password } = req.body;
     
@@ -86,6 +137,7 @@ app.post('/api/auth/registro', async (req, res) => {
     }
     
     try {
+        // Verificar si el usuario ya existe
         const { data: existingUser } = await supabase
             .from('usuarios')
             .select('email')
@@ -96,6 +148,12 @@ app.post('/api/auth/registro', async (req, res) => {
             return res.status(400).json({ error: 'El correo ya está registrado' });
         }
         
+        // Generar token de verificación
+        const verificationToken = crypto.randomBytes(32).toString('hex');
+        const tokenExpiry = new Date();
+        tokenExpiry.setHours(tokenExpiry.getHours() + 24);
+        
+        // Insertar usuario
         const { data, error } = await supabase
             .from('usuarios')
             .insert([{
@@ -105,23 +163,126 @@ app.post('/api/auth/registro', async (req, res) => {
                 telefono: telefono || null,
                 email: email,
                 password: password,
-                tipo_usu: 'estudiante'
+                tipo_usu: 'estudiante',
+                email_verified: false,
+                verification_token: verificationToken,
+                verification_token_expires: tokenExpiry,
+                created_at: new Date()
             }])
             .select();
         
         if (error) {
+            console.error('Error al insertar usuario:', error);
             return res.status(500).json({ error: error.message });
         }
         
+        // Enviar correo de verificación
+        await sendVerificationEmail(email, nombre, verificationToken);
+        
         const { password: _, ...usuarioSinPassword } = data[0];
-        res.status(201).json(usuarioSinPassword);
+        res.status(201).json({ 
+            message: 'Usuario registrado exitosamente. Revisa tu correo para verificar tu cuenta.',
+            usuario: usuarioSinPassword
+        });
         
     } catch (error) {
+        console.error('Error en registro:', error);
         res.status(500).json({ error: 'Error del servidor' });
     }
 });
 
-// Ruta de login
+// ✅ Ruta para VERIFICAR email
+app.get('/api/auth/verificar-email', async (req, res) => {
+    const { token } = req.query;
+    
+    if (!token) {
+        return res.status(400).json({ error: 'Token de verificación no proporcionado' });
+    }
+    
+    try {
+        const { data: user, error } = await supabase
+            .from('usuarios')
+            .select('*')
+            .eq('verification_token', token)
+            .single();
+        
+        if (error || !user) {
+            return res.status(400).json({ error: 'Token de verificación inválido' });
+        }
+        
+        const tokenExpiry = new Date(user.verification_token_expires);
+        if (tokenExpiry < new Date()) {
+            return res.status(400).json({ error: 'El enlace de verificación ha expirado. Solicita uno nuevo.' });
+        }
+        
+        const { error: updateError } = await supabase
+            .from('usuarios')
+            .update({
+                email_verified: true,
+                verification_token: null,
+                verification_token_expires: null
+            })
+            .eq('id', user.id);
+        
+        if (updateError) throw updateError;
+        
+        res.json({ 
+            success: true, 
+            message: 'Email verificado exitosamente. Ya puedes iniciar sesión.' 
+        });
+        
+    } catch (error) {
+        console.error('Error en verificación:', error);
+        res.status(500).json({ error: 'Error del servidor' });
+    }
+});
+
+// ✅ Ruta para REENVIAR correo de verificación
+app.post('/api/auth/reenviar-verificacion', async (req, res) => {
+    const { email } = req.body;
+    
+    if (!email) {
+        return res.status(400).json({ error: 'Email es obligatorio' });
+    }
+    
+    try {
+        const { data: user, error } = await supabase
+            .from('usuarios')
+            .select('*')
+            .eq('email', email)
+            .single();
+        
+        if (error || !user) {
+            return res.status(404).json({ error: 'Usuario no encontrado' });
+        }
+        
+        if (user.email_verified) {
+            return res.status(400).json({ error: 'El correo ya está verificado' });
+        }
+        
+        const newToken = crypto.randomBytes(32).toString('hex');
+        const tokenExpiry = new Date();
+        tokenExpiry.setHours(tokenExpiry.getHours() + 24);
+        
+        await supabase
+            .from('usuarios')
+            .update({
+                verification_token: newToken,
+                verification_token_expires: tokenExpiry
+            })
+            .eq('id', user.id);
+        
+        await sendVerificationEmail(email, user.nombre, newToken);
+        
+        res.json({ message: 'Correo de verificación reenviado exitosamente' });
+        
+    } catch (error) {
+        console.error('Error al reenviar correo:', error);
+        res.status(500).json({ error: 'Error del servidor' });
+    }
+});
+
+// ✅ Ruta de LOGIN con verificación de email
 app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
     
@@ -130,17 +291,28 @@ app.post('/api/auth/login', async (req, res) => {
             .from('usuarios')
             .select('*')
             .eq('email', email)
-            .eq('password', password)
             .single();
         
         if (error || !data) {
             return res.status(401).json({ error: 'Credenciales incorrectas' });
         }
         
-        const { password: _, ...usuarioSinPassword } = data;
+        if (data.password !== password) {
+            return res.status(401).json({ error: 'Credenciales incorrectas' });
+        }
+        
+        if (!data.email_verified) {
+            return res.status(403).json({ 
+                error: 'Email no verificado',
+                message: 'Por favor verifica tu correo electrónico antes de iniciar sesión'
+            });
+        }
+        
+        const { password: _, verification_token, verification_token_expires, ...usuarioSinPassword } = data;
         res.json(usuarioSinPassword);
         
     } catch (error) {
+        console.error('Error en login:', error);
         res.status(500).json({ error: 'Error del servidor' });
     }
 });
@@ -159,7 +331,7 @@ app.get('/api/auth/me', async (req, res) => {
         return res.status(404).json({ error: 'Usuario no encontrado' });
     }
     
-    const { password: _, ...usuarioSinPassword } = data;
+    const { password: _, verification_token, verification_token_expires, ...usuarioSinPassword } = data;
     res.json(usuarioSinPassword);
 });
 
@@ -178,7 +350,6 @@ app.get('/api/libros', async (req, res) => {
         
         if (error) throw error;
         
-        // Transformar para que sea más fácil de usar en el frontend
         const librosFormateados = data.map(libro => ({
             ...libro,
             categoria: libro.categorias?.nombre,
@@ -286,7 +457,6 @@ app.delete('/api/libros/:id', async (req, res) => {
 });
 
 // ============ INICIAR SERVIDOR ============
-
 app.listen(PORT, () => {
     console.log(`✅ Backend corriendo en http://localhost:${PORT}`);
 });

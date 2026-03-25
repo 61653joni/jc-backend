@@ -126,14 +126,40 @@ app.get('/api/libros', async (req, res) => {
 });
 
 // Obtener un libro por ID
-app.get('/api/libros/:id', async (req, res) => {
-    const { id } = req.params;
+// Obtener todos los libros con su categoría
+app.get('/api/libros', async (req, res) => {
     try {
         const { data, error } = await supabase
             .from('libros')
+            .select(`
+                *,
+                categorias (id, nombre, descripcion)
+            `)
+            .order('titulo');
+        
+        if (error) throw error;
+        
+        // Transformar para que sea más fácil de usar en el frontend
+        const librosFormateados = data.map(libro => ({
+            ...libro,
+            categoria: libro.categorias?.nombre,
+            categoria_id: libro.categoria_id,
+            categoria_info: libro.categorias
+        }));
+        
+        res.json(librosFormateados);
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/categorias', async (req, res) => {
+    try {
+        const { data, error } = await supabase
+            .from('categorias')
             .select('*')
-            .eq('id', id)
-            .single();
+            .order('nombre');
         
         if (error) throw error;
         res.json(data);
@@ -142,12 +168,10 @@ app.get('/api/libros/:id', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
-
 // Crear un nuevo libro
 app.post('/api/libros', async (req, res) => {
-    const { titulo, autor, isbn, categoria, cantidad_total, cantidad_disponible, imagen_url } = req.body;
+    const { titulo, autor, isbn, categoria_id, cantidad_total, cantidad_disponible, imagen_url } = req.body;
     
-    // Validaciones básicas
     if (!titulo || !autor) {
         return res.status(400).json({ error: 'Título y autor son obligatorios' });
     }
@@ -159,7 +183,7 @@ app.post('/api/libros', async (req, res) => {
                 titulo,
                 autor,
                 isbn: isbn || null,
-                categoria: categoria || null,
+                categoria_id: categoria_id || null,
                 cantidad_total: cantidad_total || 1,
                 cantidad_disponible: cantidad_disponible || cantidad_total || 1,
                 imagen_url: imagen_url || null
@@ -173,7 +197,6 @@ app.post('/api/libros', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
-
 // Actualizar un libro
 app.put('/api/libros/:id', async (req, res) => {
     const { id } = req.params;

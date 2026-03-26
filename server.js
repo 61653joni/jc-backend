@@ -731,6 +731,108 @@ app.get('/api/usuarios', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+app.put('/api/usuarios/:id/admin', async (req, res) => {
+    const { id } = req.params;
+    
+    try {
+        // Verificar que el usuario existe
+        const { data: usuario, error: findError } = await supabase
+            .from('usuarios')
+            .select('id, tipo_usu')
+            .eq('id', id)
+            .single();
+        
+        if (findError || !usuario) {
+            return res.status(404).json({ error: 'Usuario no encontrado' });
+        }
+        
+        // Actualizar a administrador
+        const { error: updateError } = await supabase
+            .from('usuarios')
+            .update({ tipo_usu: 'admin' })
+            .eq('id', id);
+        
+        if (updateError) throw updateError;
+        
+        console.log(`👑 Usuario ${id} promovido a administrador`);
+        res.json({ success: true, message: 'Usuario promovido a administrador' });
+        
+    } catch (error) {
+        console.error('Error al promover a admin:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ✅ Bloquear usuario
+app.put('/api/usuarios/:id/bloquear', async (req, res) => {
+    const { id } = req.params;
+    
+    try {
+        // Verificar que el usuario existe
+        const { data: usuario, error: findError } = await supabase
+            .from('usuarios')
+            .select('id, tipo_usu')
+            .eq('id', id)
+            .single();
+        
+        if (findError || !usuario) {
+            return res.status(404).json({ error: 'Usuario no encontrado' });
+        }
+        
+        // No permitir bloquear a otro administrador
+        if (usuario.tipo_usu === 'admin') {
+            return res.status(400).json({ error: 'No se puede bloquear a un administrador' });
+        }
+        
+        // Actualizar estado a bloqueado
+        const { error: updateError } = await supabase
+            .from('usuarios')
+            .update({ estado: 'bloqueado' })
+            .eq('id', id);
+        
+        if (updateError) throw updateError;
+        
+        console.log(`🔒 Usuario ${id} bloqueado`);
+        res.json({ success: true, message: 'Usuario bloqueado correctamente' });
+        
+    } catch (error) {
+        console.error('Error al bloquear usuario:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ✅ Desbloquear usuario
+app.put('/api/usuarios/:id/desbloquear', async (req, res) => {
+    const { id } = req.params;
+    
+    try {
+        // Verificar que el usuario existe
+        const { data: usuario, error: findError } = await supabase
+            .from('usuarios')
+            .select('id')
+            .eq('id', id)
+            .single();
+        
+        if (findError || !usuario) {
+            return res.status(404).json({ error: 'Usuario no encontrado' });
+        }
+        
+        // Actualizar estado a activo
+        const { error: updateError } = await supabase
+            .from('usuarios')
+            .update({ estado: 'activo' })
+            .eq('id', id);
+        
+        if (updateError) throw updateError;
+        
+        console.log(`🔓 Usuario ${id} desbloqueado`);
+        res.json({ success: true, message: 'Usuario desbloqueado correctamente' });
+        
+    } catch (error) {
+        console.error('Error al desbloquear usuario:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
 // ============ INICIAR SERVIDOR ============
 app.listen(PORT, () => {
     console.log(`✅ Backend corriendo en http://localhost:${PORT}`);

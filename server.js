@@ -119,7 +119,7 @@ async function sendVerificationEmail(email, nombre, token) {
 
     try {
         const { data, error } = await resend.emails.send({
-            from: 'Notificaciones JC <notificaciones@resend.dev>',
+            from: 'Biblioteca JC <notificaciones@biblioteca-jc.site>',
             to: [email],
             subject: 'Confirma tu correo electrónico - Biblioteca JC',
             html: `

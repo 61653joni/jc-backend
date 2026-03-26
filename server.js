@@ -1,38 +1,37 @@
 const express = require('express');
 const cors = require('cors');
-const { createClient } = require('@supabase/supabase-js'); // ✅ Solo UNA vez
+const { createClient } = require('@supabase/supabase-js');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
-const nodemailer = require('nodemailer'); // ✅ Agregado
-const crypto = require('crypto'); // ✅ Agregado
+const { Resend } = require('resend'); // ✅ Solo Resend
+const crypto = require('crypto');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ✅ Validar variables de entorno
 const requiredEnv = [
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY',
-  'EMAIL_USER',
-  'EMAIL_PASS',
+  'RESEND_API_KEY', 
   'FRONTEND_URL'
 ];
-
 
 const missingVars = requiredEnv.filter(key => !process.env[key]);
 
 if (missingVars.length > 0) {
   console.error('❌ Error: Faltan variables de entorno requeridas:');
   missingVars.forEach(key => console.error(`   - ${key}`));
-  console.error('\n💡 Solución:');
-  console.error('   En Render: Ve a Dashboard → Variables de entorno y agrega las que faltan');
-  console.error('   En local: Asegúrate de tener un archivo .env con todas las variables');
   process.exit(1);
 }
 
 console.log('✅ Variables de entorno validadas correctamente');
 console.log(`   FRONTEND_URL: ${process.env.FRONTEND_URL}`);
-console.log(`   EMAIL_USER: ${process.env.EMAIL_USER ? '✅ Configurado' : '❌ Faltante'}`);
+console.log(`   RESEND_API_KEY: ${process.env.RESEND_API_KEY ? '✅ Configurado' : '❌ Faltante'}`);
+
+// ✅ Inicializar Resend (¡Esto faltaba!)
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Middleware
 app.use(cors({
@@ -47,23 +46,14 @@ const supabase = createClient(
     process.env.SUPABASE_ANON_KEY
 );
 
-// Configurar nodemailer para enviar correos
-const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-    }
-});
-
-// ✅ Endpoint de salud para verificar el estado
+// ✅ Endpoint de salud (solo uno)
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
         environment: process.env.NODE_ENV || 'development',
         supabase_configured: !!process.env.SUPABASE_URL,
-        email_configured: !!process.env.EMAIL_USER,
+        resend_configured: !!process.env.RESEND_API_KEY,
         frontend_url: process.env.FRONTEND_URL
     });
 });
@@ -121,49 +111,66 @@ app.post('/api/upload', upload.single('imagen'), async (req, res) => {
 
 // ============ FUNCIÓN PARA ENVIAR CORREO DE VERIFICACIÓN ============
 async function sendVerificationEmail(email, nombre, token) {
-    // ✅ Usar variable de entorno para la URL base
     const BASE_URL = process.env.FRONTEND_URL;
     const verificationUrl = `${BASE_URL}/verify-email?token=${token}`;
     
     console.log(`📧 Preparando correo de verificación para: ${email}`);
     console.log(`🔗 Enlace de verificación: ${verificationUrl}`);
     
-    const mailOptions = {
-        from: '"Biblioteca JC" <no-reply@jcbiblioteca.com>',
-        to: email,
-        subject: 'Confirma tu correo electrónico - Biblioteca JC',
-        html: `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <h2 style="color: #007bff;">¡Bienvenido a Biblioteca JC!</h2>
-                <p>Hola <strong>${nombre || 'usuario'}</strong>,</p>
-                <p>Gracias por registrarte. Por favor confirma tu correo electrónico haciendo clic en el siguiente enlace:</p>
-                <div style="text-align: center; margin: 30px 0;">
-                    <a href="${verificationUrl}" 
-                       style="background-color: #007bff; color: white; padding: 12px 24px; 
-                              text-decoration: none; border-radius: 5px; display: inline-block;">
-                        Confirmar mi cuenta
-                    </a>
-                </div>
-                <p>O copia y pega este enlace en tu navegador:</p>
-                <p style="background-color: #f4f4f4; padding: 10px; border-radius: 5px; word-break: break-all;">
-                    ${verificationUrl}
-                </p>
-                <p>Este enlace expirará en <strong>24 horas</strong>.</p>
-                <p>Si no creaste esta cuenta, puedes ignorar este correo.</p>
-                <hr style="margin: 30px 0;">
-                <p style="color: #666; font-size: 12px;">© 2024 Biblioteca JC. Todos los derechos reservados.</p>
-            </div>
-        `
-    };
-    
     try {
-        await transporter.sendMail(mailOptions);
-        console.log(`✅ Correo de verificación enviado a ${email}`);
+        const { data, error } = await resend.emails.send({
+            from: 'Biblioteca JC <onboarding@resend.dev>', // ✅ Dominio verificado en Resend
+            to: [email],
+            subject: 'Confirma tu correo electrónico - Biblioteca JC',
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                    <h2 style="color: #007bff;">¡Bienvenido a Biblioteca JC!</h2>
+                    <p>Hola <strong>${nombre || 'usuario'}</strong>,</p>
+                    <p>Gracias por registrarte. Por favor confirma tu correo electrónico haciendo clic en el siguiente enlace:</p>
+                    <div style="text-align: center; margin: 30px 0;">
+                        <a href="${verificationUrl}" 
+                           style="background-color: #007bff; color: white; padding: 12px 24px; 
+                                  text-decoration: none; border-radius: 5px; display: inline-block;">
+                            Confirmar mi cuenta
+                        </a>
+                    </div>
+                    <p>O copia y pega este enlace en tu navegador:</p>
+                    <p style="background-color: #f4f4f4; padding: 10px; border-radius: 5px; word-break: break-all;">
+                        ${verificationUrl}
+                    </p>
+                    <p>Este enlace expirará en <strong>24 horas</strong>.</p>
+                    <p>Si no creaste esta cuenta, puedes ignorar este correo.</p>
+                    <hr style="margin: 30px 0;">
+                    <p style="color: #666; font-size: 12px;">© 2024 Biblioteca JC. Todos los derechos reservados.</p>
+                </div>
+            `
+        });
+        
+        if (error) {
+            console.error('❌ Error de Resend:', error);
+            throw error;
+        }
+        
+        console.log(`✅ Correo de verificación enviado a ${email} (ID: ${data?.id})`);
+        return data;
+        
     } catch (error) {
         console.error('❌ Error al enviar correo:', error);
         throw error;
     }
 }
+
+// ============ ENDPOINT DE SALUD ============
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || 'development',
+        supabase_configured: !!process.env.SUPABASE_URL,
+        resend_configured: !!process.env.RESEND_API_KEY,
+        frontend_url: process.env.FRONTEND_URL
+    });
+});
 
 // ============ RUTAS DE AUTENTICACIÓN ============
 
@@ -215,7 +222,7 @@ app.post('/api/auth/registro', async (req, res) => {
             return res.status(500).json({ error: error.message });
         }
         
-        // Enviar correo de verificación
+        // Enviar correo de verificación con Resend
         await sendVerificationEmail(email, nombre, verificationToken);
         
         const { password: _, ...usuarioSinPassword } = data[0];

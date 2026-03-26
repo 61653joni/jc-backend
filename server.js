@@ -10,9 +10,33 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const requiredEnv = [
+  'SUPABASE_URL',
+  'SUPABASE_ANON_KEY',
+  'EMAIL_USER',
+  'EMAIL_PASS',
+  'FRONTEND_URL'
+];
+
+
+const missingVars = requiredEnv.filter(key => !process.env[key]);
+
+if (missingVars.length > 0) {
+  console.error('❌ Error: Faltan variables de entorno requeridas:');
+  missingVars.forEach(key => console.error(`   - ${key}`));
+  console.error('\n💡 Solución:');
+  console.error('   En Render: Ve a Dashboard → Variables de entorno y agrega las que faltan');
+  console.error('   En local: Asegúrate de tener un archivo .env con todas las variables');
+  process.exit(1);
+}
+
+console.log('✅ Variables de entorno validadas correctamente');
+console.log(`   FRONTEND_URL: ${process.env.FRONTEND_URL}`);
+console.log(`   EMAIL_USER: ${process.env.EMAIL_USER ? '✅ Configurado' : '❌ Faltante'}`);
+
 // Middleware
 app.use(cors({
-    origin: ['https://jc-sooty.vercel.app', 'http://localhost:4200'],
+    origin: [process.env.FRONTEND_URL, 'http://localhost:4200'],
     credentials: true
 }));
 app.use(express.json());
@@ -30,6 +54,18 @@ const transporter = nodemailer.createTransport({
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
     }
+});
+
+// ✅ Endpoint de salud para verificar el estado
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || 'development',
+        supabase_configured: !!process.env.SUPABASE_URL,
+        email_configured: !!process.env.EMAIL_USER,
+        frontend_url: process.env.FRONTEND_URL
+    });
 });
 
 // ============ CONFIGURACIÓN DE MULTER PARA IMÁGENES ============
@@ -85,9 +121,12 @@ app.post('/api/upload', upload.single('imagen'), async (req, res) => {
 
 // ============ FUNCIÓN PARA ENVIAR CORREO DE VERIFICACIÓN ============
 async function sendVerificationEmail(email, nombre, token) {
-    const verificationUrl = `https://jc-sooty.vercel.app/verify-email?token=${token}`;
-    // Para desarrollo local descomentar la siguiente línea y comentar la de arriba:
-    // const verificationUrl = `http://localhost:4200/verify-email?token=${token}`;
+    // ✅ Usar variable de entorno para la URL base
+    const BASE_URL = process.env.FRONTEND_URL;
+    const verificationUrl = `${BASE_URL}/verify-email?token=${token}`;
+    
+    console.log(`📧 Preparando correo de verificación para: ${email}`);
+    console.log(`🔗 Enlace de verificación: ${verificationUrl}`);
     
     const mailOptions = {
         from: '"Biblioteca JC" <no-reply@jcbiblioteca.com>',

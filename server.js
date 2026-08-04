@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
+const { Client: ElasticClient } = require('@elastic/elasticsearch');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const { Resend } = require('resend'); // ✅ Solo Resend
@@ -44,6 +45,70 @@ app.use(express.json());
 const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_ANON_KEY
+);
+
+// ============ CONFIGURACIÓN DE ELASTICSEARCH ============
+const LIBROS_INDEX = 'libros';
+
+const elastic = new ElasticClient({
+    node: process.env.ELASTICSEARCH_URL || 'http://localhost:9200'
+});
+
+async function asegurarIndiceLibros() {
+    const existe = await elastic.indices.exists({ index: LIBROS_INDEX });
+    if (existe) return;
+
+    await elastic.indices.create({
+        index: LIBROS_INDEX,
+        mappings: {
+            properties: {
+                titulo: { type: 'text', analyzer: 'spanish' },
+                autor: { type: 'text', analyzer: 'spanish' },
+                isbn: { type: 'keyword' },
+                categoria_id: { type: 'keyword' },
+                categoria: { type: 'keyword' },
+                cantidad_total: { type: 'integer' },
+                cantidad_disponible: { type: 'integer' },
+                imagen_url: { type: 'keyword', index: false }
+            }
+        }
+    });
+    console.log(`✅ Índice "${LIBROS_INDEX}" creado en Elasticsearch`);
+}
+
+async function indexarLibro(libro) {
+    try {
+        await elastic.index({
+            index: LIBROS_INDEX,
+            id: String(libro.id),
+            document: {
+                titulo: libro.titulo,
+                autor: libro.autor,
+                isbn: libro.isbn,
+                categoria_id: libro.categoria_id,
+                categoria: libro.categoria || libro.categorias?.nombre || null,
+                cantidad_total: libro.cantidad_total,
+                cantidad_disponible: libro.cantidad_disponible,
+                imagen_url: libro.imagen_url
+            }
+        });
+    } catch (error) {
+        console.error('⚠️ Error al indexar libro en Elasticsearch:', error.message);
+    }
+}
+
+async function eliminarLibroDelIndice(id) {
+    try {
+        await elastic.delete({ index: LIBROS_INDEX, id: String(id) });
+    } catch (error) {
+        if (error.meta?.statusCode !== 404) {
+            console.error('⚠️ Error al eliminar libro de Elasticsearch:', error.message);
+        }
+    }
+}
+
+asegurarIndiceLibros().catch(err =>
+    console.error('⚠️ No se pudo conectar/preparar Elasticsearch:', err.message)
 );
 
 // ✅ Endpoint de salud (solo uno)
@@ -455,6 +520,63 @@ app.get('/api/libros', async (req, res) => {
     }
 });
 
+// Buscar libros por título o autor usando Elasticsearch
+app.get('/api/libros/buscar', async (req, res) => {
+    const { q } = req.query;
+
+    if (!q || !q.trim()) {
+        return res.json([]);
+    }
+
+    try {
+        const resultado = await elastic.search({
+            index: LIBROS_INDEX,
+            query: {
+                multi_match: {
+                    query: q.trim(),
+                    fields: ['titulo^2', 'autor'],
+                    fuzziness: 'AUTO'
+                }
+            }
+        });
+
+        const libros = resultado.hits.hits.map(hit => ({
+            id: hit._id,
+            ...hit._source,
+            score: hit._score
+        }));
+
+        res.json(libros);
+
+    } catch (error) {
+        console.error('Error en búsqueda de Elasticsearch:', error.message);
+        res.status(500).json({ error: 'Error al buscar libros' });
+    }
+});
+
+// Reindexar todos los libros de Supabase en Elasticsearch
+app.post('/api/libros/reindexar', async (req, res) => {
+    try {
+        const { data, error } = await supabase
+            .from('libros')
+            .select(`*, categorias (id, nombre, descripcion)`);
+
+        if (error) throw error;
+
+        await asegurarIndiceLibros();
+
+        for (const libro of data) {
+            await indexarLibro({ ...libro, categoria: libro.categorias?.nombre });
+        }
+
+        res.json({ message: `${data.length} libros reindexados en Elasticsearch` });
+
+    } catch (error) {
+        console.error('Error al reindexar:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Obtener categorías
 app.get('/api/categorias', async (req, res) => {
     try {
@@ -494,6 +616,7 @@ app.post('/api/libros', async (req, res) => {
             .select();
 
         if (error) throw error;
+        await indexarLibro(data[0]);
         res.status(201).json(data[0]);
 
     } catch (error) {
@@ -522,6 +645,7 @@ app.put('/api/libros/:id', async (req, res) => {
             .select();
 
         if (error) throw error;
+        await indexarLibro(data[0]);
         res.json(data[0]);
 
     } catch (error) {
@@ -540,6 +664,7 @@ app.delete('/api/libros/:id', async (req, res) => {
             .eq('id', id);
 
         if (error) throw error;
+        await eliminarLibroDelIndice(id);
         res.status(204).send();
 
     } catch (error) {

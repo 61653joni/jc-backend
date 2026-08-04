@@ -11,6 +11,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@elastic/elasticsearch": "^8.19.1",
     "@supabase/supabase-js": "^2.100.0",
     "cors": "^2.8.6",
     "crypto": "^1.0.1",

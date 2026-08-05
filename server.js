@@ -51,7 +51,10 @@ const supabase = createClient(
 const LIBROS_INDEX = 'libros';
 
 const elastic = new ElasticClient({
-    node: process.env.ELASTICSEARCH_URL || 'http://localhost:9200'
+  node: process.env.ELASTICSEARCH_URL,
+  auth: {
+    apiKey: process.env.ELASTICSEARCH_API_KEY
+  }
 });
 
 async function asegurarIndiceLibros() {
